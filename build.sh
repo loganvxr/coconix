@@ -1,0 +1,1 @@
+arduino-cli compile /workspaces/coconix/ --output-dir build --fqbn arduino:renesas_uno:unor4wifi -e

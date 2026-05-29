@@ -30,3 +30,4 @@ libraries/
 
 # arduino-cli
 .arduino/
+bin/

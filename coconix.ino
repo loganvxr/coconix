@@ -6,10 +6,12 @@
 #define NO_MEMORY_CHECK 0      // Disable checking the amount of free memory available.
 #define NO_SOFT_RESET 0        // Disable software resets.
 #define NO_TONE_FUNC 0         // Disable piezo support.
-#define NO_EEPROM 0            // Disable all access and usage of the EEPROM storage.
-#define HW_NAME "Arduino UNO"  // The name of the board running Coconix.
+#define NO_EEPROM 1            // Disable all access and usage of the EEPROM storage.
+#define HW_NAME "Arduino UNO R4 WiFi"  // The name of the board running Coconix.
 #define BAUD_RATE 115200       // On some boards, this may need to be reconfigured to prevent garbling in the Serial Monitor.
 #define VERSION_NUMBER "0.1"   // Version string for this version of Coconix.
+#define NO_WIFI 0              // Disable wifi support.
+#define NO_BLE 0              // Disable Bluetooth Low Energy support.
 
 
 #if not defined(ADAFRUIT_METRO_M0_EXPRESS) && not defined(ARDUINO_SAM_DUE) && not defined(ARDUINO_GIGA) && NO_EEPROM == 0  // EEPROM is allowed and not using Adafruit Metro M0 Express board.
@@ -156,6 +158,10 @@ void loadFS() {
   }
   addDmesg(F("FS loaded from EEPROM"));
 }
+#endif
+
+#if NO_WIFI == 0
+#include <WiFi.h>
 #endif
 
 void initFS() {
@@ -721,8 +727,224 @@ void executeCommand(char* line) {
     Serial.println(String("NO_SOFT_RESET: ") + NO_SOFT_RESET);
     Serial.println(String("NO_TONE_FUNC: ") + NO_TONE_FUNC);
     Serial.println(String("NO_EEPROM: ") + NO_EEPROM);
+    Serial.println(String("NO_WIFI: ") + NO_WIFI);
     Serial.println(String("HW_NAME: ") + HW_NAME);
     Serial.println(String("HW_ARCH: ") + HW_ARCH);
+  }
+
+  else if (strcmp_P(cmd, PSTR("wifi")) == 0) {
+    #if NO_WIFI == 0
+    if (is_argstr_empty(args)) {
+      Serial.println(F("wifi [status/connect/disconnect]"));
+      return;
+    }
+
+    // tokenize additional arugments
+    char wifiArgs[32];
+    strncpy(wifiArgs, args, sizeof(wifiArgs) - 1);
+    wifiArgs[sizeof(wifiArgs) - 1] = '\0';
+
+    char* subcmd = strtok(wifiArgs, " ");
+    char* arg1 = strtok(NULL, " ");
+    char* arg2 = strtok(NULL, " ");
+
+    // handle sub-commands
+    if (strcmp_P(subcmd, PSTR("status")) == 0) {
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.print(F("Connected to: "));
+        Serial.println(WiFi.SSID());
+
+        Serial.print(F("IP: "));
+        Serial.println(WiFi.localIP());
+
+        Serial.print(F("Signal: "));
+        Serial.print(WiFi.RSSI());
+        Serial.println(F(" dBm"));
+      } else {
+        Serial.println(F("WiFi not connected!"));
+      } // connect sub-command
+    } else if (strcmp_P(subcmd, PSTR("connect")) == 0) {
+      // check if ssid and pass are set in the command
+      // need to add support for non password protected wifi in the future
+      if (arg1 == NULL) {
+        Serial.println(F("Usage: wifi connect [ssid] [password]"));
+        return;
+      }
+      
+      // check if wifi is already connected
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.println(F("Already connected."));
+        return;
+      }
+      
+      // time to actually connect to the wifi
+      Serial.print(F("Connecting to "));
+      Serial.print(arg1);
+
+      // if there wasn't a password provided, just assume that the wifi has no password
+      if (arg2 == NULL) {
+        WiFi.begin(arg1);
+      } else {
+        WiFi.begin(arg1, arg2);
+      }
+
+      int attempts = 0;
+      
+      while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(F("."));
+        attempts++;
+      }
+
+      Serial.println();
+
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.println(F("Connected!"));
+
+        Serial.print(F("IP: "));
+        Serial.println(WiFi.localIP());
+
+        addDmesg(F("WiFi connected"));
+      } else {
+        Serial.println(F("Connection failed."));
+      } // handle disconnect
+    } else if (strcmp_P(subcmd, PSTR("disconnect")) == 0) {
+      WiFi.disconnect();
+      Serial.println(F("WiFi disconnected."));
+      addDmesg(F("WiFi disconnected"));
+    } else if (strcmp_P(subcmd, PSTR("ping")) == 0) { // handle ping commands
+
+      // properly check if we're connected to wifi
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println(F("WiFi not connected!"));
+        return;
+      }
+
+      if (arg1 == NULL) {
+        Serial.println(F("Usage: wifi ping [destination]"));
+        return;
+      }
+
+      IPAddress ip;
+
+      // check if the input is an ip
+      if (!ip.fromString(arg1)) {
+
+        // this is not an ip so we need to resolve the hostname
+        if (!WiFi.hostByName(arg1, ip)) {
+          Serial.println(F("DNS lookup failed"));
+          return;
+        }
+      }
+
+      // time to ping the ip but before we need to do some fancy formatting
+
+      // output -> PING arg1 (IP) 32 bytes of data.
+      Serial.print(F("PING "));
+      Serial.print(arg1);
+      Serial.print(F(" ("));
+      Serial.print(ip.toString());
+      Serial.print(F(") "));
+      Serial.println(F("32 bytes of data."));
+      Serial.println();
+
+      // we're always going to transmit 4 packets for simplicity
+      int received = 0;
+      int packet_loss = 0;
+      int total_time = 0; // total latency in ms
+      int count = 0;
+
+      // track total session duration
+      unsigned long session_start = millis();
+
+      while (count != 4) {
+
+        WiFiClient client;
+
+        // start timing the connection
+        unsigned long start = millis();
+
+        // attempt a tcp connection instead of icmp
+        bool connected = client.connect(ip, 443);
+
+        // calculate latency
+        int result = millis() - start;
+
+        if (connected) {
+
+          // output -> Reply from arg1: bytes=32 time=[x]ms
+          Serial.print(F("Reply from "));
+          Serial.print(arg1);
+          Serial.print(F(": bytes=32 time="));
+          Serial.print(result);
+          Serial.println(F("ms"));
+
+          received++;
+
+          total_time += result;
+
+          // close the socket
+          client.stop();
+
+        } else {
+
+          Serial.println(F("Ping failed"));
+        }
+
+        count++;
+
+        // small delay between packets
+        delay(250);
+      }
+
+      // calculate packet loss percentage
+      packet_loss = ((count - received) * 100) / count;
+
+      int avg_time = 0;
+
+      // avoid division by zero
+      if (received > 0) {
+          avg_time = total_time / received;
+      }
+
+      // calculate total elapsed time
+      unsigned long total_duration = millis() - session_start;
+
+      // output -> --- arg1 ping statistics ---
+      Serial.println();
+      Serial.print(F("--- "));
+      Serial.print(arg1);
+      Serial.println(F(" ping statistics ---"));
+
+      // output -> 4 packets transmitted, [x] received, [x]% packet loss, time [x]ms
+      Serial.print(F("4 packets transmitted, "));
+      Serial.print(received);
+      Serial.print(F(" received, "));
+      Serial.print(packet_loss);
+      Serial.print(F("% packet loss, time "));
+      Serial.print(total_duration);
+      Serial.println(F("ms"));
+
+      // output -> rtt avg = [x]ms
+      if (received > 0) {
+        Serial.print(F("rtt avg = "));
+        Serial.print(avg_time);
+        Serial.println(F("ms"));
+      }
+    } else { // handle unknown commands
+      Serial.println(F("Unknown wifi subcommand."));
+    }
+    #else
+    Serial.println(F("The WiFi module is not enaled in this build!"));
+    #endif
+  }
+
+  else if (strcmp_P(cmd, PSTR("ble")) == 0) {
+    #if NO_BLE == 0
+
+    #else
+      Serial.println(F("BLE is not enabled in this build!"));
+    #endif
   }
 
   else {
