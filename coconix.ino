@@ -655,7 +655,7 @@ void executeCommand(char* line) {
     Serial.println(F("Commands: ls, cd, pwd, mkdir, touch, cat, echo, rm, info"));
     Serial.println(F("          pinmode, write, read, gpio, sh"));
     Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot, tone, notone, sleep"));
-    Serial.println(F("          sync, build-info"));
+    Serial.println(F("          sync, build-info, wifi"));
     Serial.println(F("GPIO: gpio [pin] on/off/toggle  |  gpio vixa [count] | tone [pin] [freq] | notone [pin]"));
     Serial.println(F("SH:   sh [file]  -- run script (use ; as line separator)"));
 
@@ -699,7 +699,7 @@ void executeCommand(char* line) {
   } else if (strcmp_P(cmd, PSTR("help")) == 0) {
     Serial.println(F("Commands: ls, cd, pwd, mkdir, touch, cat, echo, rm, info"));
     Serial.println(F("          pinmode, write, read, gpio, pwm, sh"));
-    Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot"));
+    Serial.println(F("          uptime, uname, dmesg, df, free, whoami, clear, reboot, wifi"));
     Serial.println(F("GPIO: gpio [pin] on/off/toggle  |  gpio vixa [count]"));
     Serial.println(F("SH:   sh [file]  -- run script (use ; as line separator)"));
     Serial.println(F("SYNC: sync       -- save filesystem to EEPROM"));
@@ -754,12 +754,43 @@ void executeCommand(char* line) {
         Serial.print(F("Connected to: "));
         Serial.println(WiFi.SSID());
 
+        // no need for a delay here because usually the DHCP server has time to lease an IP before this command is executed
+
+
+        // IP: x.x.x.x
         Serial.print(F("IP: "));
         Serial.println(WiFi.localIP());
 
+        // Signal: x dBm
         Serial.print(F("Signal: "));
         Serial.print(WiFi.RSSI());
         Serial.println(F(" dBm"));
+
+        // Gateway: x.x.x.x
+        Serial.print(F("Gateway: "));
+        Serial.println(WiFi.gatewayIP());
+
+        // DNS: x.x.x.x
+        Serial.print(F("DNS: "));
+        Serial.println(WiFi.dnsIP());
+
+        // MAC: xx:xx:xx:xx:xx:xx
+        byte mac[6]; // mac addresses are an 6-byte array
+
+        WiFi.macAddress(mac);
+        Serial.print(F("MAX: "));
+        Serial.print(mac[5],HEX);
+        Serial.print(":"); // I don't really think there's a need to store ":" in flash mem, it wouldn't really save much
+        Serial.print(mac[4],HEX);
+        Serial.print(":");
+        Serial.print(mac[3],HEX);
+        Serial.print(":");
+        Serial.print(mac[2],HEX);
+        Serial.print(":");
+        Serial.print(mac[1],HEX);
+        Serial.print(":");
+        Serial.println(mac[0],HEX);
+
       } else {
         Serial.println(F("WiFi not connected!"));
       } // connect sub-command
@@ -801,6 +832,19 @@ void executeCommand(char* line) {
       if (WiFi.status() == WL_CONNECTED) {
         Serial.println(F("Connected!"));
 
+        // IP was showing as 0.0.0.0 when connected to a network possibly the DHCP server hasn't leased an IP yet
+        // so we just wait until we've got an ip other that 0.0.0.0
+        // if it's been over 10sec (10,000ms) then the DHCP server probably timed out
+        unsigned long start = millis();
+
+        while (WiFi.localIP() == IPAddress(0,0,0,0)) {
+            if (millis() - start > 10000) {
+                Serial.println(F("DHCP timeout"));
+                return;
+            }
+            delay(100);
+        }
+
         Serial.print(F("IP: "));
         Serial.println(WiFi.localIP());
 
@@ -813,7 +857,6 @@ void executeCommand(char* line) {
       Serial.println(F("WiFi disconnected."));
       addDmesg(F("WiFi disconnected"));
     } else if (strcmp_P(subcmd, PSTR("ping")) == 0) { // handle ping commands
-
       // properly check if we're connected to wifi
       if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F("WiFi not connected!"));
@@ -931,6 +974,103 @@ void executeCommand(char* line) {
         Serial.print(avg_time);
         Serial.println(F("ms"));
       }
+
+      addDmesg(F("pinged network"));
+    } else if (strcmp_P(subcmd, PSTR("scan")) == 0) { // handle wifi scan commands
+      if (WiFi.status() == WL_CONNECTED) {
+        // WiFi likely will disconnected so we'll warn the user about this.
+        Serial.println(F("Warning: Scanning may disrupt WiFi connectivity."));
+      }
+
+      int count = WiFi.scanNetworks();
+
+      // check if the scan returned any results
+      if (count == 0) {
+        Serial.println(F("No wifi networks found."));
+        return;
+      } else {
+        // Example output
+        /////////////////
+        // Nearby WiFi Networks:
+        // [1] ExampleSSID
+        //     Signal: -42 dBm
+        //     Encryption: WPA2
+
+        Serial.println(F("Nearby WiFi Networks:"));
+        for (int i = 0; i < count; i++) {
+          // [i] ExampleSSID
+          Serial.print(F("["));
+          Serial.print(i+1);
+          Serial.print(F("] "));
+          Serial.println(WiFi.SSID(i));
+
+          //    Signal: [x] dBm
+          Serial.print(F("    Signal: "));
+          Serial.print(WiFi.RSSI(i));
+          Serial.println(F(" dbm"));
+
+          //    Encryption: [x]
+          Serial.print(F("    Encryption: "));
+          
+          // there's no built-in way (to my knowledge) to easily get the encryption type without a switch-case
+          int enc = WiFi.encryptionType(i);
+
+          // Open | WEP | WPA/WPA2 | WPA2 | Auto | Unknown
+          switch (enc) {
+            case ENC_TYPE_NONE:
+              Serial.println(F("Open"));
+              break;
+            case ENC_TYPE_WEP:
+              Serial.println(F("WEP"));
+              break;
+            case ENC_TYPE_TKIP:
+              Serial.println(F("WPA/WPA2"));
+              break;
+            case ENC_TYPE_CCMP:
+              Serial.println(F("WPA2"));
+              break;
+            case ENC_TYPE_AUTO:
+              Serial.println(F("Auto"));
+              break;
+            default:
+              Serial.println(F("Unknown"));
+              break;
+          }
+          addDmesg(F("scanned wifi networks"));
+        }
+      }
+
+
+    } else if (strcmp_P(subcmd, PSTR("resolve")) == 0) { // handle resolving domains
+      // check if we're connected to a wifi network
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println(F("WiFi not connected!"));
+        return;
+      }
+
+      // check if arg1 (hostname) has been properly set
+      if (arg1 == NULL) {
+        Serial.println(F("Usage: wifi resolve [hostname]"));
+        return;
+      }
+
+      // similar to the ping command we can just use a built-in function to resolve the hostname
+      IPAddress ip;
+
+      if (!WiFi.hostByName(arg1, ip)) {
+        Serial.println(F("Failed to resolve the hostname!"));
+        return;
+      }
+
+      // Example Output
+      /////////////////
+      // google.com -> 192.178.155.138
+      Serial.print(arg1);
+      Serial.print(F(" -> "));
+      Serial.println(ip.toString());
+
+      addDmesg(F("resolved hostname"));
+
     } else { // handle unknown commands
       Serial.println(F("Unknown wifi subcommand."));
     }

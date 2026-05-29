@@ -31,3 +31,4 @@ libraries/
 # arduino-cli
 .arduino/
 bin/
+build.sh
